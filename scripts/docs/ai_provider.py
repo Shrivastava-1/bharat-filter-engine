@@ -1,39 +1,38 @@
 import json
 import os
 import urllib.error
-import urllib.parse
 import urllib.request
 
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+API_URL = (
+    f"https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{MODEL}:generateContent"
+)
 
 
 def generate(analysis):
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY")
 
     if not api_key:
-        raise RuntimeError("Gemini API key not configured")
+        raise RuntimeError("GEMINI_API_KEY is not configured")
 
     prompt = f"""
-You are documenting a Ruby gem release.
+Analyze this Ruby gem release.
 
-Analyze the actual Ruby source diff and supporting specs.
-
-Only document behavior that is clearly supported by the source code.
+Use lib_diff as the primary source of truth.
+Use spec_diff only as supporting evidence.
 
 Rules:
-- Focus on public-facing features and behavior.
-- Do not invent features or capabilities.
-- Do not mention CI, workflows, or repository maintenance.
-- Do not mention internal test file changes as user-facing features.
-- Preserve existing API behavior unless the diff proves otherwise.
-- Keep descriptions concise.
-- Do not generate generic filler.
-- Maximum 5 README highlights.
-- Empty categories must be empty arrays.
+- Document actual user-facing functionality.
+- Focus on public APIs, filters, associations, search behavior and fixes.
+- Ignore CI, GitHub workflows, linting and repository maintenance.
+- Never invent functionality.
+- Do not describe internal file changes as user-facing features.
+- Return concise, meaningful release notes.
+- Return valid JSON only.
 
-Return valid JSON only:
-
+Expected JSON:
 {{
   "highlights": [],
   "changelog": {{
@@ -44,16 +43,9 @@ Return valid JSON only:
   }}
 }}
 
-RELEASE ANALYSIS:
-
+Release analysis:
 {json.dumps(analysis, ensure_ascii=False)}
 """
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/"
-        f"models/{MODEL}:generateContent?"
-        + urllib.parse.urlencode({"key": api_key})
-    )
 
     payload = {
         "contents": [
@@ -70,41 +62,50 @@ RELEASE ANALYSIS:
     }
 
     request = urllib.request.Request(
-        url,
+        f"{API_URL}?key={api_key}",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST"
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            result = json.loads(response.read())
+        with urllib.request.urlopen(request) as response:
+            result = json.loads(response.read().decode("utf-8"))
 
         content = result["candidates"][0]["content"]["parts"][0]["text"]
         documentation = json.loads(content)
 
         if not isinstance(documentation.get("highlights"), list):
-            raise ValueError("Invalid highlights")
+            raise ValueError("Invalid highlights format")
 
-        if not isinstance(documentation.get("changelog"), dict):
-            raise ValueError("Invalid changelog")
+        changelog = documentation.get("changelog")
+
+        if not isinstance(changelog, dict):
+            raise ValueError("Invalid changelog format")
 
         for category in ("Added", "Changed", "Fixed", "Removed"):
-            if not isinstance(
-                documentation["changelog"].get(category, []),
-                list
-            ):
-                raise ValueError(f"Invalid category: {category}")
+            if not isinstance(changelog.get(category, []), list):
+                raise ValueError(f"Invalid {category} format")
 
         return documentation
 
-    except (
-        urllib.error.URLError,
-        urllib.error.HTTPError,
-        TimeoutError,
-        KeyError,
-        IndexError,
-        json.JSONDecodeError
-    ) as error:
+    except urllib.error.HTTPError as error:
         details = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini API HTTP {error.code}: {details}") from error
+        raise RuntimeError(
+            f"Gemini API HTTP {error.code}: {details}"
+        ) from error
+
+    except urllib.error.URLError as error:
+        raise RuntimeError(
+            f"Gemini API connection failed: {error.reason}"
+        ) from error
+
+    except TimeoutError as error:
+        raise RuntimeError(
+            f"Gemini API timed out after 90 seconds: {error}"
+        ) from error
+
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"Invalid Gemini API response: {error}"
+        ) from error
