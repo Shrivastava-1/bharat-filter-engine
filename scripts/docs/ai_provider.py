@@ -5,7 +5,7 @@ import urllib.parse
 import urllib.request
 
 
-MODEL = "gemini-2.5-flash"
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 
 def generate(analysis):
@@ -106,4 +106,5 @@ RELEASE ANALYSIS:
         IndexError,
         json.JSONDecodeError
     ) as error:
-        raise RuntimeError(f"Gemini API failed: {error}") from error
+        details = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gemini API HTTP {error.code}: {details}") from error
