@@ -1,9 +1,11 @@
+
 name: Update Release Documentation
 
 on:
   push:
     tags:
       - "v*"
+
   workflow_dispatch:
     inputs:
       release_tag:
@@ -11,24 +13,28 @@ on:
         required: true
         type: string
       force:
-        description: "Regenerate even if CHANGELOG.md already has this version"
+        description: "Regenerate even if CHANGELOG already contains this version"
         required: false
         type: boolean
         default: false
 
-# Least privilege at the top; elevated only on the job that needs it.
+# Minimum permissions by default.
 permissions:
   contents: read
 
+# Prevent duplicate runs for the same release.
 concurrency:
   group: release-docs-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   update-docs:
-    if: github.repository == 'jayesh70240/bharat-filter-engine'
+    # IMPORTANT: This must match your actual GitHub repository.
+    if: github.repository == 'Shrivastava-1/bharat-filter-engine'
+
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
     permissions:
       contents: write
       pull-requests: write
@@ -38,6 +44,11 @@ jobs:
       FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
 
     steps:
+
+      # --------------------------------------------------
+      # 1. Checkout default branch
+      # --------------------------------------------------
+
       - name: Checkout default branch
         uses: actions/checkout@v4
         with:
@@ -45,38 +56,66 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # --------------------------------------------------
+      # 2. Resolve release and previous version
+      # --------------------------------------------------
+
       - name: Resolve release and previous tag
         id: release
+        shell: bash
         run: |
           set -euo pipefail
+
           TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 
           if ! [[ "$RELEASE_TAG" =~ $TAG_RE ]]; then
-            echo "::error::Invalid release tag '$RELEASE_TAG' (expected vMAJOR.MINOR.PATCH[-prerelease])"
+            echo "::error::Invalid release tag: $RELEASE_TAG"
             exit 1
           fi
 
           git fetch --force --tags origin
+
           if ! git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" >/dev/null; then
-            echo "::error::Tag '$RELEASE_TAG' does not exist in this repository"
+            echo "::error::Release tag does not exist: $RELEASE_TAG"
             exit 1
           fi
 
-          # Deterministic version sort; '-' suffix makes v1.0.0-rc1 sort BEFORE v1.0.0.
-          PREV=$(git -c versionsort.suffix=- tag --list 'v[0-9]*' --sort=v:refname \
-            | grep -E "$TAG_RE" \
-            | awk -v t="$RELEASE_TAG" '$0==t {print prev; exit} {prev=$0}')
-
-          if [ "$PREV" = "$RELEASE_TAG" ]; then
-            echo "::error::Previous tag resolved to the target tag"; exit 1
-          fi
+          # Find the previous valid version tag.
+          PREV=$(
+            git -c versionsort.suffix=- tag \
+              --list 'v[0-9]*' \
+              --sort=v:refname |
+            grep -E "$TAG_RE" |
+            awk -v target="$RELEASE_TAG" '
+              $0 == target {
+                print previous
+                found=1
+                exit
+              }
+              {
+                previous=$0
+              }
+              END {
+                if (!found) exit 1
+              }
+            '
+          ) || {
+            echo "::error::Target release tag not found in sorted tags"
+            exit 1
+          }
 
           VERSION="${RELEASE_TAG#v}"
-          FIRST=false; [ -z "$PREV" ] && FIRST=true
+
+          FIRST_RELEASE=false
+          if [ -z "$PREV" ]; then
+            FIRST_RELEASE=true
+          fi
 
           SKIP=false
-          if grep -qF "## [${VERSION}]" CHANGELOG.md 2>/dev/null && [ "$FORCE" != "true" ]; then
-            echo "::notice::CHANGELOG.md already contains ${VERSION}; skipping (use force to override)"
+
+          if grep -qF "## [${VERSION}]" CHANGELOG.md 2>/dev/null \
+            && [ "$FORCE" != "true" ]; then
+            echo "::notice::Version ${VERSION} already exists in CHANGELOG.md"
             SKIP=true
           fi
 
@@ -84,10 +123,18 @@ jobs:
             echo "tag=$RELEASE_TAG"
             echo "version=$VERSION"
             echo "previous=$PREV"
-            echo "first_release=$FIRST"
+            echo "first_release=$FIRST_RELEASE"
             echo "skip=$SKIP"
           } >> "$GITHUB_OUTPUT"
-          echo "Target: $RELEASE_TAG | Previous: ${PREV:-<none, first release>}"
+
+          echo "Target release: $RELEASE_TAG"
+          echo "Previous release: ${PREV:-None}"
+          echo "First release: $FIRST_RELEASE"
+          echo "Skip generation: $SKIP"
+
+      # --------------------------------------------------
+      # 3. Setup Python
+      # --------------------------------------------------
 
       - name: Setup Python
         if: steps.release.outputs.skip != 'true'
@@ -97,9 +144,19 @@ jobs:
           cache: pip
           cache-dependency-path: scripts/docs/requirements.txt
 
+      # --------------------------------------------------
+      # 4. Install dependencies
+      # --------------------------------------------------
+
       - name: Install dependencies
         if: steps.release.outputs.skip != 'true'
-        run: pip install -r scripts/docs/requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/docs/requirements.txt
+
+      # --------------------------------------------------
+      # 5. Analyze release
+      # --------------------------------------------------
 
       - name: Analyze release
         id: analyze
@@ -109,9 +166,44 @@ jobs:
           FIRST_RELEASE: ${{ steps.release.outputs.first_release }}
         run: |
           set -euo pipefail
+
           python scripts/docs/analyze_release.py
-          HAS_CHANGES=$(python -c "import json; print(str(json.load(open('release-analysis.json'))['has_lib_changes']).lower())")
+
+          if [ ! -f release-analysis.json ]; then
+            echo "::error::release-analysis.json was not generated"
+            exit 1
+          fi
+
+          HAS_CHANGES=$(python - <<'PY'
+          import json
+          import sys
+
+          with open("release-analysis.json", encoding="utf-8") as f:
+              data = json.load(f)
+
+          # Prefer comprehensive change detection.
+          keys = (
+              "has_relevant_changes",
+              "has_changes",
+              "has_lib_changes"
+          )
+
+          for key in keys:
+              if key in data:
+                  print(str(bool(data[key])).lower())
+                  break
+          else:
+              sys.exit("No supported change-detection field found in analysis JSON")
+          PY
+          )
+
           echo "has_changes=$HAS_CHANGES" >> "$GITHUB_OUTPUT"
+
+          echo "Relevant changes detected: $HAS_CHANGES"
+
+      # --------------------------------------------------
+      # 6. Generate README and CHANGELOG using Gemini
+      # --------------------------------------------------
 
       - name: Generate documentation
         if: steps.analyze.outputs.has_changes == 'true'
@@ -119,35 +211,65 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PREVIOUS_TAG: ${{ steps.release.outputs.previous }}
           FIRST_RELEASE: ${{ steps.release.outputs.first_release }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
+
           if [ -z "${GEMINI_API_KEY:-}" ]; then
-            echo "::error::GEMINI_API_KEY secret is not configured"; exit 1
+            echo "::error::GEMINI_API_KEY secret is not configured"
+            exit 1
           fi
+
           python scripts/docs/generate_docs.py
+
+      # --------------------------------------------------
+      # 7. Validate generated documentation
+      # --------------------------------------------------
 
       - name: Validate documentation
         if: steps.analyze.outputs.has_changes == 'true'
         env:
           PREVIOUS_TAG: ${{ steps.release.outputs.previous }}
-        run: python scripts/docs/validate_docs.py
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python scripts/docs/validate_docs.py
 
-      - name: Verify only intended files changed
+      # --------------------------------------------------
+      # 8. Check generated files
+      # --------------------------------------------------
+
+      - name: Verify documentation changes
         id: scope
         if: steps.analyze.outputs.has_changes == 'true'
         run: |
           set -euo pipefail
+
+          git diff --check
+
           CHANGED=$(git diff --name-only)
-          UNEXPECTED=$(echo "$CHANGED" | grep -vxE 'README\.md|CHANGELOG\.md' | grep -v '^$' || true)
+
+          UNEXPECTED=$(printf '%s\n' "$CHANGED" |
+            grep -vxE 'README\.md|CHANGELOG\.md' |
+            grep -v '^$' || true)
+
           if [ -n "$UNEXPECTED" ]; then
-            echo "::error::Unexpected files modified: $UNEXPECTED"; exit 1
+            echo "::error::Unexpected files modified:"
+            echo "$UNEXPECTED"
+            exit 1
           fi
-          if [ -z "$CHANGED" ]; then
-            echo "::notice::Generation produced no documentation changes"
-            echo "has_diff=false" >> "$GITHUB_OUTPUT"
-          else
+
+          if ! git diff --quiet -- README.md CHANGELOG.md; then
             echo "has_diff=true" >> "$GITHUB_OUTPUT"
+            echo "Documentation changes detected."
+          else
+            echo "has_diff=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No documentation changes generated."
           fi
+
+      # --------------------------------------------------
+      # 9. Build Pull Request description
+      # --------------------------------------------------
 
       - name: Build PR description
         if: steps.scope.outputs.has_diff == 'true'
@@ -156,29 +278,55 @@ jobs:
           PREV: ${{ steps.release.outputs.previous }}
         run: |
           set -euo pipefail
-          BASE="${PREV:-4b825dc642cb6eb9a060e54bf8d69288fbee4904}"  # empty tree for first release
+
           {
-            echo "## Release documentation update"
+            echo "## Release Documentation Update"
             echo
             echo "- **Target release:** \`$TAG\`"
-            echo "- **Previous release:** ${PREV:+\`$PREV\`}${PREV:-none (first release)}"
+
+            if [ -n "$PREV" ]; then
+              echo "- **Previous release:** \`$PREV\`"
+            else
+              echo "- **Previous release:** None (first release)"
+            fi
+
             echo
-            echo "### Analyzed changes"
-            echo '```'
-            git diff --shortstat "$BASE" "$TAG" -- lib spec '*.gemspec' Gemfile Gemfile.lock || true
-            git diff --name-status "$BASE" "$TAG" -- lib | head -50 || true
-            echo '```'
+            echo "### Analyzed Changes"
+
+            if [ -n "$PREV" ]; then
+              echo '```'
+              git diff --shortstat "$PREV" "$TAG" -- \
+                lib spec '*.gemspec' Gemfile Gemfile.lock
+              echo
+              git diff --name-status "$PREV" "$TAG" -- \
+                lib spec '*.gemspec' Gemfile Gemfile.lock
+              echo '```'
+            else
+              echo "Initial release; no previous version available for comparison."
+            fi
+
             echo
-            echo "### Documentation files updated"
-            git diff --name-only | sed 's/^/- `/; s/$/`/'
+            echo "### Documentation Files Updated"
+            echo "- README.md"
+            echo "- CHANGELOG.md"
+
             echo
             echo "### Validation"
-            echo "- Automated validation (\`validate_docs.py\`): **passed**"
-            echo "- Only \`README.md\` and \`CHANGELOG.md\` were modified"
+            echo "- Documentation validation: Passed"
+            echo "- Git whitespace validation: Passed"
+            echo "- Only intended documentation files were modified."
+
             echo
-            echo "AI-generated content: please review against the diff before merging."
-            echo "This PR is **not** merged automatically."
+            echo "### Review Required"
+            echo "Please review AI-generated documentation against the actual source code changes before merging."
+
+            echo
+            echo "This PR is not automatically merged."
           } > "$RUNNER_TEMP/pr-body.md"
+
+      # --------------------------------------------------
+      # 10. Create or update Pull Request
+      # --------------------------------------------------
 
       - name: Create or update documentation PR
         if: steps.scope.outputs.has_diff == 'true'
@@ -194,24 +342,39 @@ jobs:
           commit-message: "docs: update release documentation for ${{ steps.release.outputs.tag }}"
           title: "docs: release documentation for ${{ steps.release.outputs.tag }}"
           body-path: ${{ runner.temp }}/pr-body.md
-          labels: documentation
+
+      # --------------------------------------------------
+      # 11. Upload analysis artifact
+      # --------------------------------------------------
 
       - name: Upload analysis artifacts
-        if: always()
+        if: always() && steps.release.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: release-docs-${{ steps.release.outputs.tag }}
+          name: release-docs-${{ github.run_id }}
           path: release-analysis.json
           if-no-files-found: ignore
           retention-days: 14
 
+      # --------------------------------------------------
+      # 12. Job summary
+      # --------------------------------------------------
+
       - name: Job summary
         if: always()
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          PREV: ${{ steps.release.outputs.previous }}
+          SKIP: ${{ steps.release.outputs.skip }}
+          CHANGES: ${{ steps.analyze.outputs.has_changes }}
+          PR: ${{ steps.scope.outputs.has_diff }}
         run: |
           {
-            echo "### Release docs: \`${{ steps.release.outputs.tag }}\`"
-            echo "- Previous: \`${{ steps.release.outputs.previous }}\`"
-            echo "- Skipped (already documented): ${{ steps.release.outputs.skip }}"
-            echo "- Lib changes detected: ${{ steps.analyze.outputs.has_changes }}"
-            echo "- PR needed: ${{ steps.scope.outputs.has_diff }}"
+            echo "## Release Documentation Summary"
+            echo
+            echo "- Target release: ${TAG:-Not resolved}"
+            echo "- Previous release: ${PREV:-None}"
+            echo "- Already documented: ${SKIP:-Unknown}"
+            echo "- Relevant changes detected: ${CHANGES:-Not analyzed}"
+            echo "- Documentation PR required: ${PR:-Not evaluated}"
           } >> "$GITHUB_STEP_SUMMARY"
