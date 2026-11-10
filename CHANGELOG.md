@@ -4,6 +4,18 @@
 
 All notable changes to this project will be documented here.
 
+## [0.2.0] - 2026-11-10
+
+### Added
+
+- Added implementation files: `lib/bharat_filter_engine.rb`, `lib/bharat_filter_engine/association_resolver.rb`, `lib/bharat_filter_engine/column_helper.rb`, `lib/bharat_filter_engine/dynamic_filter_values.rb`, `lib/bharat_filter_engine/engine.rb`, `lib/bharat_filter_engine/errors.rb`, `lib/bharat_filter_engine/join_tracker.rb`, `lib/bharat_filter_engine/rule_normalizer.rb`, `lib/bharat_filter_engine/search_builder.rb`, `lib/bharat_filter_engine/version.rb`
+
+### Changed
+
+- Updated or introduced Ruby methods/classes: `AssociationResolver`, `BharatFilterEngine`, `ColumnHelper`, `DynamicFilterValues`, `Engine`, `Error`, `InvalidAssociationError`, `InvalidConfigurationError`, `InvalidFilterError`, `JoinTracker`, `RuleNormalizer`, `SearchBuilder`, `apply`, `apply_array_filter`, `apply_boolean_filter`
+
+
+
 ## [0.1.1] - 2026-08-19
 
 ### Fixed
