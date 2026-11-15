@@ -1,3 +1,21 @@
+## [Unreleased]
+
+### Added
+- **Workflow:** `.github/workflows/ai-documentation.yml` – new Groq AI documentation generator workflow.
+- **Workflow:** `.github/workflows/inspect-changes.yml` – new Git comparison workflow (V2) for inspecting changes.
+- **Script:** `scripts/ai_docs/generate_docs.py` – new documentation generation script using Groq/OpenAI API.
+
+### Changed
+- **Workflow:** `.github/workflows/update-release-docs.yml` – updated configuration (details reflect recent modifications).
+
+### Removed
+- `scripts/docs/__init__.py`
+- `scripts/docs/ai_provider.py`
+- `scripts/docs/analyze_release.py`
+- `scripts/docs/fallback_generator.py`
+- `scripts/docs/generate_docs.py`
+- `scripts/docs/requirements.txt`
+- `scripts/docs/validate_docs.py`
 
 ```markdown
 # Changelog
