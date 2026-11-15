@@ -1,3 +1,22 @@
+## [Unreleased]
+
+### Added
+- **GitHub Actions workflow** `.github/workflows/ai-documentation.yml` – introduces a Groq‑based AI documentation generator that creates/updates `README.md` and `CHANGELOG.md` and opens a pull request with the changes.
+- **GitHub Actions workflow** `.github/workflows/inspect-changes.yml` – adds a “Inspect Git Changes” workflow (Git Comparison V2) that checks out full history, validates the repository, and generates comparison reports.
+- **Script** `scripts/ai_docs/generate_docs.py` – new Python module that drives the AI documentation generation, handling configuration, file I/O, Git interactions, and limits for Groq API usage.
+
+### Changed
+- Updated `.github/workflows/update-release-docs.yml` (details of the modifications are not shown in the diff but the file was altered).
+
+### Removed
+- Deleted the legacy documentation generation package `scripts/docs/` and its contents:
+  - `scripts/docs/__init__.py`
+  - `scripts/docs/ai_provider.py`
+  - `scripts/docs/analyze_release.py`
+  - `scripts/docs/fallback_generator.py`
+  - `scripts/docs/generate_docs.py`
+  - `scripts/docs/requirements.txt`
+  - `scripts/docs/validate_docs.py`
 
 ```markdown
 # Changelog
