@@ -1,4 +1,3 @@
-
 name: Groq AI Documentation Generator
 
 on:
@@ -13,39 +12,58 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: groq-documentation-pr
+  cancel-in-progress: false
+
 jobs:
   generate-documentation:
-    # Only process successful inspection runs on non-default branches.
     if: >
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch != 'development'
+      github.event.workflow_run.head_branch != 'development' &&
+      github.event.workflow_run.head_repository.full_name == 'Shrivastava-1/bharat-filter-engine'
 
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout development as the documentation PR base.
-      - name: Checkout repository
+      - name: Checkout default branch
         uses: actions/checkout@v4
         with:
           ref: development
-          fetch-depth: 0
+          fetch-depth: 1
 
-      # 2. Verify repository
-      - name: Verify repository
+      - name: Verify triggering workflow
         shell: bash
+        env:
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
 
           if [ "$GITHUB_REPOSITORY" != "Shrivastava-1/bharat-filter-engine" ]; then
-            echo "Unexpected repository."
+            echo "Unexpected target repository."
             exit 1
           fi
 
-          echo "Inspection branch: ${{ github.event.workflow_run.head_branch }}"
-          echo "Inspection run: ${{ github.event.workflow_run.id }}"
+          if [ "$SOURCE_WORKFLOW" != "Inspect Git Changes - V2" ]; then
+            echo "Unexpected source workflow."
+            exit 1
+          fi
 
-      # 3. Download artifact from the completed inspection run.
-      - name: Download inspection reports
+          if [ "$SOURCE_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
+            echo "Inspection artifact is not from this repository."
+            exit 1
+          fi
+
+          if [ "$SOURCE_BRANCH" = "development" ]; then
+            echo "Default branch is not a feature comparison."
+            exit 1
+          fi
+
+          echo "Inspecting branch: $SOURCE_BRANCH"
+
+      - name: Download inspection artifact
         uses: actions/download-artifact@v4
         with:
           name: bharat-filter-comparison-v2-${{ github.event.workflow_run.run_number }}
@@ -54,28 +72,39 @@ jobs:
           repository: ${{ github.repository }}
           path: comparison
 
-      # 4. Set up Python
+      - name: Verify downloaded report
+        shell: bash
+        env:
+          INSPECTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          SAFE_BRANCH="${INSPECTED_BRANCH//\//-}"
+          REPORT="comparison/branch-${SAFE_BRANCH}.md"
+
+          if [ ! -s "$REPORT" ]; then
+            echo "Expected report not found: $REPORT"
+            echo "Downloaded files:"
+            find comparison -maxdepth 1 -type f -print
+            exit 1
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # 5. Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade openai
 
-      # 6. Generate documentation from inspection reports.
       - name: Generate documentation using Groq
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: openai/gpt-oss-120b
           INSPECTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
-        run: |
-          python scripts/ai_docs/generate_docs.py
+        run: python scripts/ai_docs/generate_docs.py
 
-      # 7. Check documentation changes
       - name: Check documentation changes
         id: changes
         shell: bash
@@ -85,34 +114,29 @@ jobs:
             echo "No documentation changes generated."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --check
             git diff --stat -- README.md CHANGELOG.md
           fi
 
-      # 8. Create documentation PR
-      - name: Create documentation Pull Request
+      - name: Create or update documentation Pull Request
         if: steps.changes.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           base: development
           branch: ai/groq-documentation-update
-          delete-branch: true
-          commit-message: "docs: update documentation from Git inspection"
-          title: "docs: AI-generated documentation update"
+          delete-branch: false
+          commit-message: "docs: update from inspected Git changes"
+          title: "docs: AI documentation update"
           body: |
             ## Documentation update
 
-            Generated using Groq from the Inspect Git Changes - V2 artifact.
+            Generated by Groq from the Inspect Git Changes - V2 artifact.
 
             Inspected branch: ${{ github.event.workflow_run.head_branch }}
             Inspection run: ${{ github.event.workflow_run.id }}
 
-            Please review before merging.
-
+            Review all changes before merging.
           add-paths: |
             README.md
             CHANGELOG.md
-
-      # 9. Finish
-      - name: Finish
-        run: echo "Documentation workflow completed."
