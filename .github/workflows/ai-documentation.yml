@@ -1,11 +1,10 @@
 name: Groq AI Documentation Generator
 
 on:
-  workflow_run:
-    workflows:
-      - Inspect Git Changes - V2
-    types:
-      - completed
+  push:
+    branches-ignore:
+      - development
+  workflow_dispatch:
 
 permissions:
   actions: read
