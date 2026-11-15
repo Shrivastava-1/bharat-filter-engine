@@ -1,4 +1,3 @@
-
 name: Inspect Git Changes - V2
 
 run-name: Git Comparison V2 - ${{ github.ref_name }}
@@ -18,60 +17,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout complete Git history
-      - name: Checkout repository
+      - name: Checkout complete Git history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
-          persist-credentials: true
 
-      # 2. Verify repository and fetch only your fork
       - name: Verify and fetch repository
         shell: bash
         run: |
           set -euo pipefail
-
+          EXPECTED_REPO="Shrivastava-1/bharat-filter-engine"
           echo "Repository: $GITHUB_REPOSITORY"
           echo "Commit: $GITHUB_SHA"
           echo "Branch: $GITHUB_REF_NAME"
-
-          EXPECTED_REPO="Shrivastava-1/bharat-filter-engine"
 
           if [ "$GITHUB_REPOSITORY" != "$EXPECTED_REPO" ]; then
             echo "ERROR: Unexpected repository."
             exit 1
           fi
 
-          echo "Configured remote:"
-          git remote -v
-
           git fetch origin --prune --tags \
             '+refs/heads/*:refs/remotes/origin/*'
 
-          echo "Fetch completed."
-
-      # 3. Generate comparison reports
       - name: Generate Git comparison reports
         shell: bash
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: development
         run: |
           set -euo pipefail
 
           OUTPUT_DIR="comparison"
           mkdir -p "$OUTPUT_DIR"
-
           DEFAULT_REF="refs/remotes/origin/${DEFAULT_BRANCH}"
 
           if ! git show-ref --verify --quiet "$DEFAULT_REF"; then
             echo "ERROR: Default branch not found: $DEFAULT_BRANCH"
             exit 1
           fi
-
-          # --------------------------------
-          # Create main manifest
-          # --------------------------------
 
           {
             echo "# Git Comparison Report - V2"
@@ -95,102 +78,54 @@ jobs:
             date -u
             echo
             echo "## Available Tags"
-
             git tag --list --sort=v:refname
-
             echo
             echo "## Available Remote Branches"
-
-            git for-each-ref \
-              --format='%(refname:short)' \
-              refs/remotes/origin/ |
+            git for-each-ref --format='%(refname:short)' refs/remotes/origin/ |
               grep -v '/HEAD$' || true
-
           } > "$OUTPUT_DIR/manifest.md"
 
-          # --------------------------------
-          # Compare consecutive release tags
-          # --------------------------------
-
-          mapfile -t TAGS < <(
-            git tag --list --sort=v:refname
-          )
-
-          echo "Found ${#TAGS[@]} tags."
-
-          if [ "${#TAGS[@]}" -lt 2 ]; then
-            echo "Not enough tags for comparison." \
-              >> "$OUTPUT_DIR/manifest.md"
-          else
-
+          # Compare consecutive release tags, preserving the original V2 feature.
+          mapfile -t TAGS < <(git tag --list --sort=v:refname)
+          if [ "${#TAGS[@]}" -ge 2 ]; then
             for ((i=1; i<${#TAGS[@]}; i++)); do
-
               OLD="${TAGS[$((i-1))]}"
               NEW="${TAGS[$i]}"
-
               FILE="$OUTPUT_DIR/tag-${OLD}-to-${NEW}.md"
-
-              echo "Comparing tags: $OLD -> $NEW"
 
               {
                 echo "# Release Comparison: $OLD to $NEW"
                 echo
-
                 echo "## Commit Summary"
-
-                git log --reverse \
-                  --date=short \
-                  --format='- %h | %ad | %s' \
-                  "$OLD..$NEW"
-
+                git log --reverse --date=short --format='- %h | %ad | %s' "$OLD..$NEW"
                 echo
                 echo "## Changed Files"
-
                 git diff --name-status "$OLD" "$NEW"
-
                 echo
                 echo "## Change Statistics"
-
                 git diff --stat "$OLD" "$NEW"
-
                 echo
                 echo "## Actual Code Changes"
-
-                git diff --no-ext-diff \
-                  --unified=3 \
-                  --find-renames \
-                  "$OLD" "$NEW"
-
+                git diff --no-ext-diff --unified=3 --find-renames "$OLD" "$NEW"
               } > "$FILE"
-
             done
+          else
+            echo "Not enough tags for release-to-release comparison." >> "$OUTPUT_DIR/manifest.md"
           fi
 
-          # --------------------------------
-          # Compare all branches with default
-          # --------------------------------
-
           mapfile -t BRANCHES < <(
-            git for-each-ref \
-              --format='%(refname)' \
-              refs/remotes/origin/
+            git for-each-ref --format='%(refname)' refs/remotes/origin/
           )
 
           for REF in "${BRANCHES[@]}"; do
-
-            # Skip symbolic references such as origin/HEAD
             if git symbolic-ref -q "$REF" >/dev/null; then
               continue
             fi
 
             BRANCH="${REF#refs/remotes/origin/}"
-
-            # Skip the default branch
             if [ "$BRANCH" = "$DEFAULT_BRANCH" ]; then
               continue
             fi
-
-            echo "Comparing branch: $BRANCH"
 
             if ! git merge-base "$DEFAULT_REF" "$REF" >/dev/null; then
               echo "Skipping $BRANCH: no common ancestor."
@@ -198,7 +133,6 @@ jobs:
             fi
 
             SAFE_NAME="${BRANCH//\//-}"
-
             FILE="$OUTPUT_DIR/branch-${SAFE_NAME}.md"
 
             AHEAD=$(git rev-list --count "$DEFAULT_REF..$REF")
@@ -207,71 +141,35 @@ jobs:
             {
               echo "# Branch Comparison: $BRANCH"
               echo
-
               echo "## Default Branch"
               echo "$DEFAULT_BRANCH"
               echo
-
               echo "## Compared Branch"
               echo "$BRANCH"
               echo
-
               echo "## Commit Difference"
               echo "Commits ahead of default branch: $AHEAD"
               echo "Commits behind default branch: $BEHIND"
               echo
-
               echo "## Branch-specific Commits"
-
-              git log --reverse \
-                --date=short \
-                --format='- %h | %ad | %s' \
-                "$DEFAULT_REF..$REF"
-
+              git log --reverse --date=short \
+                --format='- %h | %ad | %s' "$DEFAULT_REF..$REF"
               echo
               echo "## Changed Files"
-
               git diff --name-status "$DEFAULT_REF...$REF"
-
               echo
               echo "## Change Statistics"
-
               git diff --stat "$DEFAULT_REF...$REF"
-
               echo
               echo "## Actual Code Changes"
-
-              git diff --no-ext-diff \
-                --unified=3 \
-                --find-renames \
+              git diff --no-ext-diff --unified=3 --find-renames \
                 "$DEFAULT_REF...$REF"
-
             } > "$FILE"
-
           done
 
-          # --------------------------------
-          # Final report verification
-          # --------------------------------
-
-          echo
-          echo "================================"
-          echo "REPORT GENERATION COMPLETED"
-          echo "================================"
-
-          echo "Generated files:"
-
+          echo "Generated comparison files:"
           find "$OUTPUT_DIR" -maxdepth 1 -type f -print
 
-          echo
-          echo "File count:"
-          find "$OUTPUT_DIR" -maxdepth 1 -type f | wc -l
-
-          echo
-          echo "Manifest preview:"
-          head -60 "$OUTPUT_DIR/manifest.md"
-
-      # 4. Upload the reports with a unique artifact name
       - name: Upload comparison reports
         uses: actions/upload-artifact@v4
         with:
