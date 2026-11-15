@@ -1,11 +1,12 @@
 name: Groq AI Documentation Generator
 
 on:
-  workflow_run:
-    workflows:
-      - Inspect Git Changes - V2
-    types:
-      - completed
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Feature branch whose latest successful inspection report should be used"
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -18,56 +19,59 @@ concurrency:
 
 jobs:
   generate-documentation:
-    if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch != 'development' &&
-      github.event.workflow_run.head_repository.full_name == 'Shrivastava-1/bharat-filter-engine'
-
+    if: github.repository == 'Shrivastava-1/bharat-filter-engine'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout default branch
-        uses: actions/checkout@v4
-        with:
-          ref: development
-          fetch-depth: 1
-
-      - name: Verify triggering workflow
+      - name: Validate input and find latest successful inspection run
+        id: find-run
         shell: bash
         env:
-          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
-          SOURCE_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
-          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INSPECTED_BRANCH: ${{ inputs.branch }}
         run: |
           set -euo pipefail
 
-          if [ "$GITHUB_REPOSITORY" != "Shrivastava-1/bharat-filter-engine" ]; then
-            echo "Unexpected target repository."
+          if [ -z "$INSPECTED_BRANCH" ] || [ "$INSPECTED_BRANCH" = "development" ]; then
+            echo "Enter a feature branch name, not development."
             exit 1
           fi
 
-          if [ "$SOURCE_WORKFLOW" != "Inspect Git Changes - V2" ]; then
-            echo "Unexpected source workflow."
+          echo "Looking for a successful inspection run for: $INSPECTED_BRANCH"
+
+          RUN_JSON="$(gh api \
+            --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/inspect-changes.yml/runs" \
+            -f branch="$INSPECTED_BRANCH" \
+            -f status=completed \
+            -f per_page=100)"
+
+          RUN_ID="$(printf '%s' "$RUN_JSON" | jq -r \
+            '[.workflow_runs[] | select(.conclusion == "success")] | sort_by(.created_at) | last | .id // empty')"
+
+          if [ -z "$RUN_ID" ]; then
+            echo "No successful Inspect Git Changes - V2 run found for '$INSPECTED_BRANCH'."
+            echo "Push a commit to that branch or open/update its PR, then try again."
             exit 1
           fi
 
-          if [ "$SOURCE_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
-            echo "Inspection artifact is not from this repository."
-            exit 1
-          fi
+          RUN_NUMBER="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.run_number')"
 
-          if [ "$SOURCE_BRANCH" = "development" ]; then
-            echo "Default branch is not a feature comparison."
-            exit 1
-          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "run_number=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Found inspection run ID=$RUN_ID, run number=$RUN_NUMBER."
 
-          echo "Inspecting branch: $SOURCE_BRANCH"
+      - name: Checkout development branch
+        uses: actions/checkout@v4
+        with:
+          ref: development
+          fetch-depth: 0
 
       - name: Download inspection artifact
         uses: actions/download-artifact@v4
         with:
-          name: bharat-filter-comparison-v2-${{ github.event.workflow_run.run_number }}
-          run-id: ${{ github.event.workflow_run.id }}
+          name: bharat-filter-comparison-v2-${{ steps.find-run.outputs.run_number }}
+          run-id: ${{ steps.find-run.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           path: comparison
@@ -75,7 +79,7 @@ jobs:
       - name: Verify downloaded report
         shell: bash
         env:
-          INSPECTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          INSPECTED_BRANCH: ${{ inputs.branch }}
         run: |
           set -euo pipefail
           SAFE_BRANCH="${INSPECTED_BRANCH//\//-}"
@@ -84,9 +88,12 @@ jobs:
           if [ ! -s "$REPORT" ]; then
             echo "Expected report not found: $REPORT"
             echo "Downloaded files:"
-            find comparison -maxdepth 1 -type f -print
+            find comparison -maxdepth 2 -type f -print
             exit 1
           fi
+
+          echo "Using report: $REPORT"
+          head -n 8 "$REPORT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -98,23 +105,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install --upgrade openai
 
-      - name: Generate documentation using Groq
+      - name: Generate or update README and CHANGELOG
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: openai/gpt-oss-120b
-          INSPECTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          INSPECTED_BRANCH: ${{ inputs.branch }}
         run: python scripts/ai_docs/generate_docs.py
 
       - name: Check documentation changes
         id: changes
         shell: bash
         run: |
+          set -euo pipefail
           if git diff --quiet -- README.md CHANGELOG.md; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No documentation changes generated."
           else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
             git diff --check
+            echo "changed=true" >> "$GITHUB_OUTPUT"
             git diff --stat -- README.md CHANGELOG.md
           fi
 
@@ -126,17 +134,17 @@ jobs:
           base: development
           branch: ai/groq-documentation-update
           delete-branch: false
-          commit-message: "docs: update from inspected Git changes"
+          commit-message: "docs: update README and CHANGELOG from inspection"
           title: "docs: AI documentation update"
           body: |
             ## Documentation update
 
-            Generated by Groq from the Inspect Git Changes - V2 artifact.
+            Generated manually by Groq from the latest successful inspection artifact.
 
-            Inspected branch: ${{ github.event.workflow_run.head_branch }}
-            Inspection run: ${{ github.event.workflow_run.id }}
+            Inspected branch: ${{ inputs.branch }}
+            Inspection run ID: ${{ steps.find-run.outputs.run_id }}
 
-            Review all changes before merging.
+            Please review the generated documentation before merging.
           add-paths: |
             README.md
             CHANGELOG.md
