@@ -1,3 +1,22 @@
+## [Unreleased]
+
+### Added
+- New GitHub Actions workflow **.github/workflows/ai-documentation.yml** for generating README and CHANGELOG using the Groq AI model.
+- New GitHub Actions workflow **.github/workflows/inspect-changes.yml** (version 2) to compare tags and branches.
+- New script **scripts/ai_docs/generate_docs.py** that implements documentation generation via Groq.
+
+### Changed
+- Updated **.github/workflows/update-release-docs.yml** to accommodate the new documentation generation workflow.
+
+### Removed
+- Deleted the legacy documentation generation package under **scripts/docs/**, including:
+  - `__init__.py`
+  - `ai_provider.py`
+  - `analyze_release.py`
+  - `fallback_generator.py`
+  - `generate_docs.py`
+  - `requirements.txt`
+  - `validate_docs.py`
 
 ```markdown
 # Changelog
