@@ -352,7 +352,7 @@ def main():
     original_changelog = read_text(changelog_path)
 
     if not original_readme.strip():
-        raise RuntimeError("README.md is missing or empty.")
+        original_readme = "# Bharat Filter Engine\n\nDocumentation for the Bharat Filter Engine project.\n"
 
     client = create_groq_client()
     result, digest, truncated = ask_groq(
