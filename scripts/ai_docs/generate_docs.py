@@ -1,5 +1,5 @@
-
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +17,7 @@ MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
-# Conservative limits for Groq's 8,000 TPM service tier.
+# Conservative input limits for Groq's 8,000 TPM tier.
 # These are character limits, not exact token counts.
 MAX_DIFF_CHARS = 5000
 MAX_SOURCE_CHARS = 4500
@@ -40,7 +40,7 @@ EXCLUDED_DIRS = {
 
 
 # ============================================================
-# FILE AND GIT HELPERS
+# FILE HELPERS
 # ============================================================
 
 def read_file(filename):
@@ -49,15 +49,27 @@ def read_file(filename):
     if not path.exists():
         return ""
 
-    return path.read_text(encoding="utf-8")
+    return path.read_text(
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def write_file(filename, content):
     path = ROOT / filename
-    path.write_text(content.strip() + "\n", encoding="utf-8")
 
+    path.write_text(
+        content.strip() + "\n",
+        encoding="utf-8",
+    )
+
+
+# ============================================================
+# GIT HELPERS
+# ============================================================
 
 def run_git(args, check=True):
+
     result = subprocess.run(
         ["git"] + args,
         cwd=ROOT,
@@ -77,9 +89,12 @@ def run_git(args, check=True):
 
 
 def get_latest_tag():
-    tags = run_git(
-        ["tag", "--list", "--sort=-version:refname"]
-    )
+
+    tags = run_git([
+        "tag",
+        "--list",
+        "--sort=-version:refname",
+    ])
 
     if not tags:
         raise RuntimeError(
@@ -95,6 +110,7 @@ def get_latest_tag():
 
 
 def collect_changes():
+
     print("Collecting Git changes...")
 
     latest_tag = get_latest_tag()
@@ -133,18 +149,20 @@ def collect_changes():
             f"No changes found after release tag {latest_tag}."
         )
 
-    # Keep the most recent and relevant part of the diff.
-    diff = diff[:MAX_DIFF_CHARS]
-
     return {
         "tag": latest_tag,
         "commits": commits[:2500],
         "files": changed_files[:2500],
-        "diff": diff,
+        "diff": diff[:MAX_DIFF_CHARS],
     }
 
 
+# ============================================================
+# SOURCE CODE COLLECTION
+# ============================================================
+
 def collect_source_context():
+
     print("Reading current source code...")
 
     context_parts = []
@@ -166,7 +184,10 @@ def collect_source_context():
         if path.suffix not in allowed_extensions:
             continue
 
-        if any(part in EXCLUDED_DIRS for part in path.parts):
+        if any(
+            part in EXCLUDED_DIRS
+            for part in path.parts
+        ):
             continue
 
         full_path = ROOT / path
@@ -199,7 +220,7 @@ def collect_source_context():
 
 
 # ============================================================
-# GROQ API
+# GROQ CLIENT
 # ============================================================
 
 def create_groq_client():
@@ -225,6 +246,7 @@ def ask_groq(client, instructions, prompt):
     print("Sending request to Groq...")
 
     try:
+
         response = client.chat.completions.create(
             model=MODEL,
             messages=[
@@ -243,12 +265,15 @@ def ask_groq(client, instructions, prompt):
 
         content = response.choices[0].message.content
 
-        if not content:
-            raise RuntimeError("Groq returned an empty response.")
+        if not content or not content.strip():
+            raise RuntimeError(
+                "Groq returned an empty response."
+            )
 
         return content.strip()
 
     except Exception as error:
+
         raise RuntimeError(
             f"Groq API request failed: {error}"
         ) from error
@@ -270,25 +295,23 @@ def generate_changelog(
     instructions = """
 You are an expert open-source software documentation engineer.
 
-Generate an accurate Markdown changelog.
+Generate ONLY a new Unreleased section for CHANGELOG.md.
 
 Rules:
-1. Use only information supported by the supplied Git history,
-   changed files, source code, and existing changelog.
-2. Never invent features, bug fixes, APIs, or release versions.
-3. Add a new [Unreleased] section at the top.
+1. Start with ## [Unreleased].
+2. Use only evidence from the supplied Git history,
+   changed files, and source code.
+3. Never invent features, bug fixes, or APIs.
 4. Organize changes under suitable headings:
    Added, Changed, Fixed, Removed, Security.
-5. Include only headings that have relevant changes.
-6. Preserve all existing historical changelog entries.
-7. Do not claim a release has been published unless evidence
-   explicitly confirms it.
-8. Return the complete CHANGELOG.md content.
-9. Return Markdown only. Do not use code fences.
+5. Include only categories with actual changes.
+6. Do not include previous release history.
+7. Do not invent release versions or dates.
+8. Return Markdown only, without code fences.
 """
 
     prompt = f"""
-Create the updated CHANGELOG.md.
+Generate the new Unreleased changelog section.
 
 LATEST RELEASE TAG:
 {changes["tag"]}
@@ -302,16 +325,70 @@ CHANGED FILES:
 GIT DIFF:
 {changes["diff"]}
 
-SOURCE CODE CONTEXT:
+SOURCE CODE:
 {source_context[:2500]}
 
-EXISTING CHANGELOG:
-{existing_changelog}
+EXISTING CHANGELOG CONTEXT:
+{existing_changelog[:MAX_CHANGELOG_CHARS]}
 
-Generate the complete updated changelog.
+Return only the new Unreleased section.
 """
 
-    return ask_groq(client, instructions, prompt)
+    return ask_groq(
+        client,
+        instructions,
+        prompt,
+    )
+
+
+def merge_changelog(
+    new_section,
+    original_changelog,
+):
+
+    new_section = new_section.strip()
+
+    # Remove accidental Markdown code fences.
+    new_section = re.sub(
+        r"^\s*```(?:markdown|md)?\s*",
+        "",
+        new_section,
+        flags=re.IGNORECASE,
+    )
+
+    new_section = re.sub(
+        r"\s*```\s*$",
+        "",
+        new_section,
+    ).strip()
+
+    if not re.search(
+        r"(?im)^#{1,6}\s*\[Unreleased\]",
+        new_section,
+    ):
+        raise RuntimeError(
+            "Groq did not generate a valid "
+            "[Unreleased] changelog heading."
+        )
+
+    history = original_changelog.strip()
+
+    if history:
+
+        # Remove the old Unreleased section only.
+        # Preserve the title and all previous release sections.
+        history = re.sub(
+            r"(?ims)^#{1,6}\s*\[Unreleased\]"
+            r".*?(?=^#{1,6}\s|\Z)",
+            "",
+            history,
+            count=1,
+        ).strip()
+
+        if history:
+            return new_section + "\n\n" + history
+
+    return new_section
 
 
 # ============================================================
@@ -334,16 +411,16 @@ Update the project's README.md using the supplied evidence.
 
 Rules:
 1. Preserve useful existing documentation.
-2. Do not remove sections unless they are clearly obsolete.
+2. Do not remove important existing sections.
 3. Use the source code and Git changes to understand the project.
 4. Document only functionality that actually exists.
 5. Never invent installation commands, APIs, arguments,
    configuration options, or examples.
 6. Keep examples consistent with the actual source code.
-7. Improve clarity, formatting, and organization where useful.
+7. Improve clarity and formatting where useful.
 8. Do not invent badges, statistics, or project links.
 9. Return the complete README.md content.
-10. Return Markdown only. Do not use code fences.
+10. Return Markdown only, without code fences.
 """
 
     prompt = f"""
@@ -370,7 +447,11 @@ EXISTING README:
 Return the complete updated README.md.
 """
 
-    return ask_groq(client, instructions, prompt)
+    return ask_groq(
+        client,
+        instructions,
+        prompt,
+    )
 
 
 # ============================================================
@@ -380,7 +461,6 @@ Return the complete updated README.md.
 def validate_document(
     filename,
     content,
-    original_content,
 ):
 
     if not content or not content.strip():
@@ -400,21 +480,15 @@ def validate_document(
             f"{filename}: Generated document is too short."
         )
 
-    if (
-        original_content
-        and len(original_content) > 500
-        and len(content) < len(original_content) * 0.5
-    ):
-        raise RuntimeError(
-            f"{filename}: Generated document is unexpectedly "
-            "short compared with the existing document. "
-            "Original file has been preserved."
-        )
-
     if filename == "CHANGELOG.md":
-        if "[Unreleased]" not in content:
+
+        if not re.search(
+            r"(?im)^#{1,6}\s*\[Unreleased\]",
+            content,
+        ):
             raise RuntimeError(
-                "CHANGELOG.md does not contain an [Unreleased] section."
+                "CHANGELOG.md does not contain "
+                "a valid [Unreleased] heading."
             )
 
     return content
@@ -431,28 +505,42 @@ def main():
     print(f"Model: {MODEL}")
     print("=" * 60)
 
+    # Step 1: Collect changes.
     changes = collect_changes()
 
+    # Step 2: Read original documentation.
     print("Reading existing documentation...")
 
-    existing_readme = read_file("README.md")[:MAX_README_CHARS]
+    original_readme = read_file("README.md")
+    original_changelog = read_file("CHANGELOG.md")
 
-    existing_changelog = read_file("CHANGELOG.md")[
+    existing_readme = original_readme[:MAX_README_CHARS]
+
+    existing_changelog = original_changelog[
         :MAX_CHANGELOG_CHARS
     ]
 
+    # Step 3: Collect source code.
     source_context = collect_source_context()
 
+    # Step 4: Create Groq client.
     client = create_groq_client()
 
-    # Generate both documents before modifying either file.
-    new_changelog = generate_changelog(
+    # Step 5: Generate only the new changelog section.
+    generated_section = generate_changelog(
         client,
         changes,
         existing_changelog,
         source_context,
     )
 
+    # Step 6: Merge new section with original history.
+    new_changelog = merge_changelog(
+        generated_section,
+        original_changelog,
+    )
+
+    # Step 7: Generate README.
     new_readme = generate_readme(
         client,
         changes,
@@ -460,26 +548,33 @@ def main():
         source_context,
     )
 
+    # Step 8: Validate both documents.
     print("Validating generated documentation...")
 
     new_changelog = validate_document(
         "CHANGELOG.md",
         new_changelog,
-        read_file("CHANGELOG.md"),
     )
 
     new_readme = validate_document(
         "README.md",
         new_readme,
-        read_file("README.md"),
     )
 
+    # Step 9: Write only after both documents pass validation.
     print("Validation successful.")
 
     print("Writing documentation files...")
 
-    write_file("CHANGELOG.md", new_changelog)
-    write_file("README.md", new_readme)
+    write_file(
+        "CHANGELOG.md",
+        new_changelog,
+    )
+
+    write_file(
+        "README.md",
+        new_readme,
+    )
 
     print("=" * 60)
     print("Documentation generation completed successfully.")
@@ -489,9 +584,20 @@ def main():
     print("=" * 60)
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
+
     try:
         main()
+
     except Exception as error:
-        print(f"\nERROR: {error}", file=sys.stderr)
+
+        print(
+            f"\nERROR: {error}",
+            file=sys.stderr,
+        )
+
         sys.exit(1)
