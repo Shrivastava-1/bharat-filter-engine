@@ -4,8 +4,6 @@ run-name: Git Comparison V2 - ${{ github.ref_name }}
 
 on:
   push:
-    branches-ignore:
-      - development
   workflow_dispatch:
 
 permissions:
