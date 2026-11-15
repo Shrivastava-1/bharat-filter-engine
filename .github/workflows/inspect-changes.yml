@@ -1,16 +1,9 @@
-name: Inspect Git Changes - V2
+name: Inspect Git Changes
 
 run-name: Git Comparison V2 - ${{ github.ref_name }}
 
 on:
   push:
-  pull_request:
-    branches:
-      - development
-    types:
-      - opened
-      - synchronize
-      - reopened
   workflow_dispatch:
 
 permissions:
