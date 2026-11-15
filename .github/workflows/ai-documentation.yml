@@ -1,150 +1,102 @@
+
 name: Groq AI Documentation Generator
 
 on:
+  push:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: "Feature branch whose latest successful inspection report should be used"
-        required: true
-        type: string
 
 permissions:
-  actions: read
   contents: write
   pull-requests: write
 
-concurrency:
-  group: groq-documentation-pr
-  cancel-in-progress: false
-
 jobs:
   generate-documentation:
-    if: github.repository == 'Shrivastava-1/bharat-filter-engine'
+    name: Generate README and Changelog
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate input and find latest successful inspection run
-        id: find-run
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INSPECTED_BRANCH: ${{ inputs.branch }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "$INSPECTED_BRANCH" ] || [ "$INSPECTED_BRANCH" = "development" ]; then
-            echo "Enter a feature branch name, not development."
-            exit 1
-          fi
-
-          echo "Looking for a successful inspection run for: $INSPECTED_BRANCH"
-
-          RUN_JSON="$(gh api \
-            --method GET \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/inspect-changes.yml/runs" \
-            -f branch="$INSPECTED_BRANCH" \
-            -f status=completed \
-            -f per_page=100)"
-
-          RUN_ID="$(printf '%s' "$RUN_JSON" | jq -r \
-            '[.workflow_runs[] | select(.conclusion == "success")] | sort_by(.created_at) | last | .id // empty')"
-
-          if [ -z "$RUN_ID" ]; then
-            echo "No successful Inspect Git Changes - V2 run found for '$INSPECTED_BRANCH'."
-            echo "Push a commit to that branch or open/update its PR, then try again."
-            exit 1
-          fi
-
-          RUN_NUMBER="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.run_number')"
-
-          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "run_number=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "Found inspection run ID=$RUN_ID, run number=$RUN_NUMBER."
-
-      - name: Checkout development branch
+      # 1. Checkout your fork
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: development
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
-      - name: Download inspection artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: bharat-filter-comparison-v2-${{ steps.find-run.outputs.run_number }}
-          run-id: ${{ steps.find-run.outputs.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
-          path: comparison
-
-      - name: Verify downloaded report
+      # 2. Verify repository
+      - name: Verify repository
         shell: bash
-        env:
-          INSPECTED_BRANCH: ${{ inputs.branch }}
         run: |
           set -euo pipefail
-          SAFE_BRANCH="${INSPECTED_BRANCH//\//-}"
-          REPORT="comparison/branch-${SAFE_BRANCH}.md"
 
-          if [ ! -s "$REPORT" ]; then
-            echo "Expected report not found: $REPORT"
-            echo "Downloaded files:"
-            find comparison -maxdepth 2 -type f -print
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Branch: $GITHUB_REF_NAME"
+
+          if [ "$GITHUB_REPOSITORY" != "Shrivastava-1/bharat-filter-engine" ]; then
+            echo "Unexpected repository. Stopping."
             exit 1
           fi
 
-          echo "Using report: $REPORT"
-          head -n 8 "$REPORT"
-
+      # 3. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      # 4. Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade openai
 
-      - name: Generate or update README and CHANGELOG
+      # 5. Generate documentation using Groq
+      - name: Generate documentation
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: openai/gpt-oss-120b
-          INSPECTED_BRANCH: ${{ inputs.branch }}
-        run: python scripts/ai_docs/generate_docs.py
+        run: |
+          python scripts/ai_docs/generate_docs.py
 
+      # 6. Check generated changes
       - name: Check documentation changes
         id: changes
         shell: bash
         run: |
-          set -euo pipefail
           if git diff --quiet -- README.md CHANGELOG.md; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No documentation changes generated."
           else
-            git diff --check
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Documentation changes detected."
             git diff --stat -- README.md CHANGELOG.md
           fi
 
-      - name: Create or update documentation Pull Request
+      # 7. Create Pull Request
+      - name: Create documentation Pull Request
         if: steps.changes.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          base: development
+          commit-message: "docs: update README and changelog using Groq"
           branch: ai/groq-documentation-update
-          delete-branch: false
-          commit-message: "docs: update README and CHANGELOG from inspection"
-          title: "docs: AI documentation update"
+          delete-branch: true
+          title: "docs: Groq AI documentation update"
           body: |
             ## Documentation update
 
-            Generated manually by Groq from the latest successful inspection artifact.
+            Generated using Groq API.
 
-            Inspected branch: ${{ inputs.branch }}
-            Inspection run ID: ${{ steps.find-run.outputs.run_id }}
+            Model: openai/gpt-oss-120b
 
-            Please review the generated documentation before merging.
+            Files updated:
+            - README.md
+            - CHANGELOG.md
+
+            Please review all generated changes before merging.
           add-paths: |
             README.md
             CHANGELOG.md
+
+      # 8. Final result
+      - name: Finish
+        run: |
+          echo "Groq documentation workflow completed."
