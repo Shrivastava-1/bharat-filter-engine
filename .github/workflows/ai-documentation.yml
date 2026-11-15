@@ -1,69 +1,81 @@
+
 name: Groq AI Documentation Generator
 
 on:
-  push:
-    branches:
-      - development
-
-  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Inspect Git Changes - V2
+    types:
+      - completed
 
 permissions:
+  actions: read
   contents: write
   pull-requests: write
 
 jobs:
   generate-documentation:
-    name: Generate README and Changelog
+    # Only process successful inspection runs on non-default branches.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch != 'development'
+
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout your fork
+      # 1. Checkout development as the documentation PR base.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: development
           fetch-depth: 0
 
-      # 2. Verify repository and branch
+      # 2. Verify repository
       - name: Verify repository
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Branch: $GITHUB_REF_NAME"
-
           if [ "$GITHUB_REPOSITORY" != "Shrivastava-1/bharat-filter-engine" ]; then
-            echo "Unexpected repository. Stopping."
+            echo "Unexpected repository."
             exit 1
           fi
 
-          if [ "$GITHUB_REF_NAME" != "development" ]; then
-            echo "Unexpected branch. Stopping."
-            exit 1
-          fi
+          echo "Inspection branch: ${{ github.event.workflow_run.head_branch }}"
+          echo "Inspection run: ${{ github.event.workflow_run.id }}"
 
-      # 3. Set up Python
+      # 3. Download artifact from the completed inspection run.
+      - name: Download inspection reports
+        uses: actions/download-artifact@v4
+        with:
+          name: bharat-filter-comparison-v2-${{ github.event.workflow_run.run_number }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          path: comparison
+
+      # 4. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # 4. Install dependencies
+      # 5. Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade openai
 
-      # 5. Generate documentation using Groq
-      - name: Generate documentation
+      # 6. Generate documentation from inspection reports.
+      - name: Generate documentation using Groq
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: openai/gpt-oss-120b
+          INSPECTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           python scripts/ai_docs/generate_docs.py
 
-      # 6. Check generated changes
+      # 7. Check documentation changes
       - name: Check documentation changes
         id: changes
         shell: bash
@@ -73,37 +85,34 @@ jobs:
             echo "No documentation changes generated."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Documentation changes detected."
             git diff --stat -- README.md CHANGELOG.md
           fi
 
-      # 7. Create documentation Pull Request
+      # 8. Create documentation PR
       - name: Create documentation Pull Request
         if: steps.changes.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "docs: update README and changelog using Groq"
+          base: development
           branch: ai/groq-documentation-update
           delete-branch: true
-          title: "docs: Groq AI documentation update"
+          commit-message: "docs: update documentation from Git inspection"
+          title: "docs: AI-generated documentation update"
           body: |
             ## Documentation update
 
-            Generated using Groq API.
+            Generated using Groq from the Inspect Git Changes - V2 artifact.
 
-            Model: openai/gpt-oss-120b
+            Inspected branch: ${{ github.event.workflow_run.head_branch }}
+            Inspection run: ${{ github.event.workflow_run.id }}
 
-            Files updated:
-            - README.md
-            - CHANGELOG.md
+            Please review before merging.
 
-            Please review all generated changes before merging.
           add-paths: |
             README.md
             CHANGELOG.md
 
-      # 8. Final result
+      # 9. Finish
       - name: Finish
-        run: |
-          echo "Groq documentation workflow completed."
+        run: echo "Documentation workflow completed."
