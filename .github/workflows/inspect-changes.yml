@@ -1,0 +1,167 @@
+name: Inspect Git Changes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Compare Tags and Branches
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout your fork with complete Git history
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Step 2: Fetch all branches and tags from your fork only
+      - name: Fetch repository history
+        run: |
+          git fetch origin --prune --tags \
+            '+refs/heads/*:refs/remotes/origin/*'
+
+      # Step 3: Generate comparison reports
+      - name: Generate Git comparison reports
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p comparison
+
+          DEFAULT_REF="refs/remotes/origin/${DEFAULT_BRANCH}"
+
+          if ! git show-ref --verify --quiet "$DEFAULT_REF"; then
+            echo "Default branch not found: $DEFAULT_BRANCH"
+            exit 1
+          fi
+
+          {
+            echo "# Git Comparison Report"
+            echo
+            echo "## Repository"
+            echo "${GITHUB_REPOSITORY}"
+            echo
+            echo "## Default Branch"
+            echo "$DEFAULT_BRANCH"
+            echo
+            echo "## Available Tags"
+            git tag --list --sort=v:refname || true
+            echo
+            echo "## Available Remote Branches"
+            git for-each-ref \
+              --format='%(refname:short)' refs/remotes/origin/ \
+              | grep -v '/HEAD$' || true
+          } > comparison/manifest.md
+
+          # -----------------------------------------
+          # Compare consecutive release tags
+          # -----------------------------------------
+
+          mapfile -t TAGS < <(
+            git tag --list --sort=v:refname
+          )
+
+          if [ "${#TAGS[@]}" -lt 2 ]; then
+            echo "Not enough tags for comparison." \
+              >> comparison/manifest.md
+          else
+            for ((i=1; i<${#TAGS[@]}; i++)); do
+              OLD="${TAGS[$((i-1))]}"
+              NEW="${TAGS[$i]}"
+
+              FILE="comparison/tag-${OLD}-to-${NEW}.md"
+
+              {
+                echo "# Tag Comparison: $OLD to $NEW"
+                echo
+
+                echo "## Commits"
+                git log --oneline "$OLD..$NEW" || true
+                echo
+
+                echo "## Changed Files"
+                git diff --name-status "$OLD" "$NEW" || true
+                echo
+
+                echo "## Code Changes"
+                git diff --no-ext-diff \
+                  --unified=3 \
+                  --find-renames \
+                  "$OLD" "$NEW" || true
+
+              } > "$FILE"
+            done
+          fi
+
+          # -----------------------------------------
+          # Compare other branches against default
+          # -----------------------------------------
+
+          mapfile -t BRANCHES < <(
+            git for-each-ref \
+              --format='%(refname)' refs/remotes/origin/ \
+              | grep -v '/HEAD$' || true
+          )
+
+          for REF in "${BRANCHES[@]}"; do
+
+            BRANCH="${REF#refs/remotes/}"
+
+            # Skip the default branch
+            if [ "$BRANCH" = "origin/$DEFAULT_BRANCH" ]; then
+              continue
+            fi
+
+            if ! git merge-base "$DEFAULT_REF" "$REF" >/dev/null; then
+              echo "Skipping $BRANCH: no common ancestor."
+              continue
+            fi
+
+            BASE="$(git merge-base "$DEFAULT_REF" "$REF")"
+
+            SAFE_NAME="${BRANCH//\//-}"
+            FILE="comparison/branch-${SAFE_NAME}.md"
+
+            {
+              echo "# Branch Comparison: $BRANCH"
+              echo
+              echo "## Base Branch"
+              echo "$DEFAULT_BRANCH"
+              echo
+
+              echo "## Branch-specific Commits"
+              git log --oneline "$DEFAULT_REF..$REF" || true
+              echo
+
+              echo "## Changed Files"
+              git diff --name-status "$DEFAULT_REF...$REF" || true
+              echo
+
+              echo "## Code Changes"
+              git diff --no-ext-diff \
+                --unified=3 \
+                --find-renames \
+                "$DEFAULT_REF...$REF" || true
+
+            } > "$FILE"
+
+          done
+
+          echo "Comparison reports generated successfully."
+          find comparison -type f -maxdepth 1 -print
+
+      # Step 4: Upload comparison reports
+      - name: Upload comparison reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: bharat-filter-comparison
+          path: comparison/
+          if-no-files-found: error
+          retention-days: 14
