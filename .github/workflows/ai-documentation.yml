@@ -1,0 +1,61 @@
+
+name: OpenAI Documentation Generator
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  generate-documentation:
+    name: Generate README and Changelog
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout your fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install OpenAI SDK
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai
+
+      - name: Generate documentation with OpenAI
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-6-astra
+        run: |
+          python scripts/ai_docs/generate_docs.py
+
+      - name: Create documentation Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "docs: update README and changelog with OpenAI"
+          branch: ai/update-documentation
+          delete-branch: true
+          title: "docs: AI-generated README and CHANGELOG update"
+          body: |
+            ## Documentation update
+
+            This Pull Request was generated using the OpenAI API.
+
+            Updated files:
+            - CHANGELOG.md
+            - README.md
+
+            Please review all generated changes for technical accuracy
+            before merging.
+          add-paths: |
+            README.md
+            CHANGELOG.md
