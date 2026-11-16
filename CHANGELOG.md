@@ -58,18 +58,6 @@ All notable changes to this project will be documented here.
 - Search terms containing `%`, `_`, or the escape character are escaped
   before building LIKE conditions.
 
-### Tests
-
-- Added and expanded RSpec coverage for presence and negated filters,
-  including nested associations and non-string columns.
-- Added coverage for association resolution, multi-level paths, join
-  tracking, and same-table association collisions.
-- Added coverage for simple and field-based search, AND/OR combinations,
-  invalid fields, ID searching, and LIKE wildcard escaping.
-- Added coverage for dynamic filter values, including nested fields,
-  partial-term matching, blank-value exclusion, distinct results, and limits.
-- Added configuration-validation and invalid-numeric-input examples.
-
 ## [0.1.1] - 2026-08-19
 
 ### Fixed
